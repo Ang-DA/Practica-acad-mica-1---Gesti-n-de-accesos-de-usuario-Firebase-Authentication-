@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetGuard — Control de Acceso en Red</title>
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getAuth,
+      createUserWithEmailAndPassword,
+      signInWithEmailAndPassword,
+      signOut,
+      onAuthStateChanged,
+      updateProfile
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAGp_vjR9NGCQ1RBHZKFbmuQuKkVtNcxyg",
+      authDomain: "gestion-de-accesos-de-us-72f58.firebaseapp.com",
+      projectId: "gestion-de-accesos-de-us-72f58",
+      storageBucket: "gestion-de-accesos-de-us-72f58.firebasestorage.app",
+      messagingSenderId: "184439681695",
+      appId: "1:184439681695:web:94de664d40707d324468aa"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    /* ── Registro de incidencias ────────────────── */
+    const incidencias = [];
+
+    function logIncidencia(tipo, usuario, detalle = "") {
+      const entrada = {
+        id: Date.now(),
+        tipo,
+        usuario: usuario || "Anónimo",
+        detalle,
+        fecha: new Date().toLocaleDateString("es-MX"),
+        hora: new Date().toLocaleTimeString("es-MX"),
+        ip: "192.168.1." + Math.floor(Math.random() * 254 + 1) // simulada
+      };
+      incidencias.unshift(entrada);
+      renderIncidencias();
+      return entrada;
+    }
+
+    function renderIncidencias() {
+      const tbody = document.getElementById("incidenciasBody");
+      if (!tbody) return;
+      tbody.innerHTML = incidencias.slice(0, 50).map(i => `
+      <tr class="inc-row ${i.tipo === 'ERROR' ? 'inc-error' : i.tipo === 'ACCESO' ? 'inc-acceso' : i.tipo === 'SALIDA' ? 'inc-salida' : 'inc-registro'}">
+        <td><span class="badge badge-${i.tipo.toLowerCase()}">${i.tipo}</span></td>
+        <td>${i.fecha} ${i.hora}</td>
+        <td class="td-user">${i.usuario}</td>
+        <td>${i.ip}</td>
+        <td>${i.detalle}</td>
+      </tr>
+    `).join("");
+    }
+
+    /* ── Autenticación ──────────────────────────── */
+    window.registrarUsuario = async function () {
+      const nombre = document.getElementById("regNombre").value.trim();
+      const email = document.getElementById("regEmail").value.trim();
+      const pass = document.getElementById("regPass").value;
+
+      if (!nombre || !email || !pass) {
+        return showToast("Completa todos los campos", "error");
+      }
+      if (pass.length < 6) {
+        return showToast("La contraseña debe tener al menos 6 caracteres", "error");
+      }
+
+      try {
+        setLoading("btnRegistrar", true);
+        const cred = await createUserWithEmailAndPassword(auth, email, pass);
+        await updateProfile(cred.user, { displayName: nombre });
+        logIncidencia("REGISTRO", email, `Nuevo usuario: ${nombre}`);
+        showToast(`✓ Usuario ${nombre} registrado exitosamente`, "ok");
+        document.getElementById("regNombre").value = "";
+        document.getElementById("regEmail").value = "";
+        document.getElementById("regPass").value = "";
+        switchTab("login");
+      } catch (err) {
+        logIncidencia("ERROR", email, firebaseError(err.code));
+        showToast(firebaseError(err.code), "error");
+      } finally {
+        setLoading("btnRegistrar", false);
+      }
+    };
+
+    window.iniciarSesion = async function () {
+      const email = document.getElementById("loginEmail").value.trim();
+      const pass = document.getElementById("loginPass").value;
+
+      if (!email || !pass) return showToast("Completa todos los campos", "error");
+
+      try {
+        setLoading("btnLogin", true);
+        await signInWithEmailAndPassword(auth, email, pass);
+        // onAuthStateChanged manejará el resto
+      } catch (err) {
+        logIncidencia("ERROR", email, firebaseError(err.code));
+        showToast(firebaseError(err.code), "error");
+      } finally {
+        setLoading("btnLogin", false);
+      }
+    };
+
+    window.cerrarSesion = async function () {
+      const user = auth.currentUser;
+      if (user) {
+        logIncidencia("SALIDA", user.email, "Sesión cerrada manualmente");
+      }
+      await signOut(auth);
+    };
+
+    /* ── Estado de autenticación ────────────────── */
+    onAuthStateChanged(auth, user => {
+      if (user) {
+        document.getElementById("authPanel").style.display = "none";
+        document.getElementById("dashPanel").style.display = "flex";
+        document.getElementById("userNameDisp").textContent = user.displayName || user.email;
+        document.getElementById("userEmailDisp").textContent = user.email;
+        document.getElementById("userUIDDisp").textContent = user.uid.substring(0, 16) + "…";
+        document.getElementById("userCreated").textContent = user.metadata.creationTime
+          ? new Date(user.metadata.creationTime).toLocaleDateString("es-MX") : "—";
+        logIncidencia("ACCESO", user.email, `Sesión iniciada — UID: ${user.uid.substring(0, 8)}`);
+      } else {
+        document.getElementById("authPanel").style.display = "flex";
+        document.getElementById("dashPanel").style.display = "none";
+      }
+    });
+
+    /* ── Utilidades ─────────────────────────────── */
+    function firebaseError(code) {
+      const map = {
+        "auth/email-already-in-use": "El correo ya está registrado",
+        "auth/invalid-email": "Correo electrónico inválido",
+        "auth/weak-password": "Contraseña muy débil (mín. 6 caracteres)",
+        "auth/user-not-found": "Usuario no encontrado",
+        "auth/wrong-password": "Contraseña incorrecta",
+        "auth/too-many-requests": "Demasiados intentos. Intenta más tarde",
+        "auth/network-request-failed": "Error de red. Verifica tu conexión",
+        "auth/invalid-credential": "Credenciales inválidas",
+      };
+      return map[code] || `Error de autenticación: ${code}`;
+    }
+
+    function setLoading(id, state) {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      btn.disabled = state;
+      btn.dataset.originalText = btn.dataset.originalText || btn.textContent;
+      btn.textContent = state ? "Procesando…" : btn.dataset.originalText;
+    }
+
+    window.showToast = function (msg, tipo) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.className = "toast show " + tipo;
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => t.className = "toast", 3200);
+    };
+
+    window.switchTab = function (tab) {
+      document.querySelectorAll(".auth-tab").forEach(el => el.classList.remove("active"));
+      document.querySelectorAll(".auth-form").forEach(el => el.classList.remove("active"));
+      document.getElementById("tab-" + tab).classList.add("active");
+      document.getElementById("form-" + tab).classList.add("active");
+    };
+
+    window.limpiarLog = function () {
+      incidencias.length = 0;
+      renderIncidencias();
+      showToast("Registro de incidencias limpiado", "ok");
+    };
+  </script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    :root {
+      --bg: #2f3136;
+      --panel: #36393f;
+      --card: #2f3136;
+      --border: #42454b;
+      --input-bg: #40444b;
+      --accent: #5865f2;
+      --accent-h: #4752c4;
+      --green: #3ba55c;
+      --red: #ed4245;
+      --yellow: #faa61a;
+      --cyan: #00b0f4;
+      --text: #dcddde;
+      --text-dim: #b9bbbe;
+      --muted: #72767d;
+      --white: #ffffff;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+      font-size: 14px;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 32px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo-mark {
+      width: 40px;
+      height: 40px;
+      background: var(--accent);
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: .95rem;
+      color: #fff;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--white);
+      letter-spacing: -.01em;
+    }
+
+    header h1 span {
+      color: var(--accent);
+    }
+
+    .header-meta {
+      margin-left: auto;
+      font-size: .75rem;
+      color: var(--muted);
+      text-align: right;
+      line-height: 1.6;
+    }
+
+    /* ── Auth Panel ── */
+    #authPanel {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: calc(100vh - 69px);
+      padding: 48px 20px;
+      background: var(--bg);
+    }
+
+    .auth-card {
+      width: 100%;
+      max-width: 480px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    /* Tabs as page-level header above card */
+    .auth-card-header {
+      display: flex;
+      gap: 0;
+      padding: 0 4px;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+
+    .auth-tab {
+      padding: 14px 20px;
+      font-family: 'Inter', sans-serif;
+      font-size: .85rem;
+      font-weight: 500;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color .15s, border-color .15s;
+    }
+
+    .auth-tab.active {
+      color: var(--white);
+      border-bottom-color: var(--accent);
+    }
+
+    .auth-tab:hover:not(.active) {
+      color: var(--text-dim);
+    }
+
+    .auth-form {
+      display: none;
+      padding: 28px 28px 32px;
+    }
+
+    .auth-form.active {
+      display: block;
+    }
+
+    .auth-form h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--white);
+      margin-bottom: 4px;
+    }
+
+    .auth-form>p {
+      font-size: .875rem;
+      color: var(--text-dim);
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+
+    .field {
+      margin-bottom: 20px;
+    }
+
+    .field label {
+      display: block;
+      font-size: .875rem;
+      font-weight: 600;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+
+    .field input {
+      width: 100%;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 12px;
+      color: var(--white);
+      font-family: 'Inter', sans-serif;
+      font-size: .9rem;
+      outline: none;
+      transition: border-color .15s;
+      height: 40px;
+    }
+
+    .field input:focus {
+      border-color: var(--accent);
+    }
+
+    .field input::placeholder {
+      color: var(--muted);
+    }
+
+    .field .hint {
+      font-size: .8rem;
+      color: var(--muted);
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+
+    .field .hint a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .field .hint a:hover {
+      text-decoration: underline;
+    }
+
+    .btn-primary {
+      width: 100%;
+      padding: 11px;
+      background: var(--accent);
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      font-family: 'Inter', sans-serif;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+      margin-top: 8px;
+      height: 44px;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-h);
+    }
+
+    .btn-primary:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    /* ── Dashboard ── */
+    #dashPanel {
+      display: none;
+      flex-direction: column;
+      min-height: calc(100vh - 69px);
+      background: var(--bg);
+    }
+
+    .dash-topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      flex-wrap: wrap;
+    }
+
+    .user-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 14px;
+    }
+
+    .user-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: .9rem;
+      color: #fff;
+      flex-shrink: 0;
+    }
+
+    .user-info-label {
+      font-size: .7rem;
+      color: var(--muted);
+    }
+
+    .user-info-name {
+      font-size: .9rem;
+      font-weight: 600;
+      color: var(--white);
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(59, 165, 92, .12);
+      border: 1px solid rgba(59, 165, 92, .4);
+      border-radius: 20px;
+      padding: 5px 12px;
+      font-size: .75rem;
+      font-weight: 600;
+      color: var(--green);
+      margin-left: auto;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+
+    .btn-logout {
+      padding: 7px 16px;
+      background: rgba(237, 66, 69, .12);
+      border: 1px solid rgba(237, 66, 69, .4);
+      border-radius: 4px;
+      color: var(--red);
+      font-family: 'Inter', sans-serif;
+      font-size: .8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+
+    .btn-logout:hover {
+      background: rgba(237, 66, 69, .22);
+    }
+
+    /* ── Stats cards ── */
+    .dash-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      padding: 24px 32px 16px;
+    }
+
+    .stat-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+      border-left: 3px solid transparent;
+    }
+
+    .stat-card.c-acceso {
+      border-left-color: var(--green);
+    }
+
+    .stat-card.c-error {
+      border-left-color: var(--red);
+    }
+
+    .stat-card.c-registro {
+      border-left-color: var(--accent);
+    }
+
+    .stat-card.c-salida {
+      border-left-color: var(--yellow);
+    }
+
+    .stat-icon {
+      font-size: 1.4rem;
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--white);
+    }
+
+    .stat-label {
+      font-size: .72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-top: 2px;
+    }
+
+    /* ── User info cards ── */
+    .dash-user-info {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 12px;
+      padding: 0 32px 24px;
+    }
+
+    .info-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+
+    .info-card-label {
+      font-size: .72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 5px;
+    }
+
+    .info-card-value {
+      font-size: .85rem;
+      color: var(--cyan);
+      word-break: break-all;
+      font-weight: 500;
+    }
+
+    /* ── Incidencias ── */
+    .log-section {
+      flex: 1;
+      padding: 0 32px 36px;
+    }
+
+    .log-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .log-header h3 {
+      font-size: .9rem;
+      font-weight: 700;
+      color: var(--white);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .log-count {
+      font-size: .73rem;
+      background: rgba(88, 101, 242, .15);
+      border: 1px solid rgba(88, 101, 242, .35);
+      padding: 2px 10px;
+      border-radius: 20px;
+      color: var(--accent);
+    }
+
+    .btn-clear {
+      margin-left: auto;
+      padding: 5px 14px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: .75rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all .15s;
+    }
+
+    .btn-clear:hover {
+      color: var(--text);
+      border-color: var(--text-dim);
+    }
+
+    .log-table-wrap {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .82rem;
+    }
+
+    thead tr {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      padding: 10px 14px;
+      text-align: left;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      font-size: .7rem;
+      color: var(--muted);
+    }
+
+    td {
+      padding: 9px 14px;
+      border-bottom: 1px solid rgba(66, 69, 75, .5);
+      vertical-align: middle;
+    }
+
+    .inc-row:last-child td {
+      border-bottom: none;
+    }
+
+    .inc-row:hover {
+      background: rgba(255, 255, 255, .03);
+    }
+
+    .td-user {
+      font-size: .78rem;
+      color: var(--text-dim);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: .7rem;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .badge-acceso {
+      background: rgba(59, 165, 92, .18);
+      color: var(--green);
+    }
+
+    .badge-error {
+      background: rgba(237, 66, 69, .18);
+      color: var(--red);
+    }
+
+    .badge-registro {
+      background: rgba(88, 101, 242, .18);
+      color: #8a96f5;
+    }
+
+    .badge-salida {
+      background: rgba(250, 166, 26, .18);
+      color: var(--yellow);
+    }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 18px;
+      border-radius: 6px;
+      font-weight: 500;
+      font-size: .875rem;
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+      transition: all .25s;
+      max-width: 320px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+
+    .toast.ok {
+      background: rgba(59, 165, 92, .2);
+      border: 1px solid var(--green);
+      color: var(--green);
+    }
+
+    .toast.error {
+      background: rgba(237, 66, 69, .2);
+      border: 1px solid var(--red);
+      color: var(--red);
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: .5;
+      }
+    }
+
+    /* ── Demo notice ── */
+    .demo-notice {
+      background: rgba(250, 166, 26, .08);
+      border: 1px solid rgba(250, 166, 26, .25);
+      border-radius: 4px;
+      padding: 10px 14px;
+      font-size: .8rem;
+      color: #faa61a;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .demo-notice strong {
+      color: var(--white);
+    }
+
+    @media (max-width: 700px) {
+      header {
+        padding: 12px 16px;
+      }
+
+      .dash-topbar,
+      .dash-stats,
+      .dash-user-info,
+      .log-section {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      .header-meta {
+        display: none;
+      }
+
+      th:nth-child(4),
+      td:nth-child(4) {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ── HEADER ── -->
+  <header>
+    <div class="logo-mark">NG</div>
+    <div>
+      <h1>Net<span>Guard</span></h1>
+    </div>
+    <div class="header-meta">
+      <div id="headerDate"></div>
+      <div>Sistema de Control de Acceso en Red</div>
+    </div>
+  </header>
+
+  <!-- ── AUTH PANEL ── -->
+  <div id="authPanel">
+    <div class="auth-card">
+      <div class="auth-card-header">
+        <button class="auth-tab active" id="tab-login" onclick="switchTab('login')">Iniciar Sesión</button>
+        <button class="auth-tab" id="tab-registro" onclick="switchTab('registro')">Registrarse</button>
+      </div>
+
+      <!-- LOGIN -->
+      <div class="auth-form active" id="form-login">
+        <h2>Identificación</h2>
+        <p>Introduce tus credenciales para acceder al sistema</p>
+
+        <div class="field">
+          <label>Correo electrónico</label>
+          <input type="email" id="loginEmail" placeholder="usuario@dominio.com">
+        </div>
+        <div class="field">
+          <label>Contraseña</label>
+          <input type="password" id="loginPass" placeholder="••••••••"
+            onkeydown="if(event.key==='Enter') iniciarSesion()">
+        </div>
+        <button class="btn-primary" id="btnLogin" onclick="iniciarSesion()">
+          Autenticar &amp; Acceder
+        </button>
+      </div>
+
+      <!-- REGISTRO -->
+      <div class="auth-form" id="form-registro">
+        <h2>Nuevo Usuario</h2>
+        <p>Crea una cuenta para acceder al sistema</p>
+
+        <div class="field">
+          <label>Nombre completo</label>
+          <input type="text" id="regNombre" placeholder="Juan García">
+        </div>
+        <div class="field">
+          <label>Correo electrónico</label>
+          <input type="email" id="regEmail" placeholder="usuario@dominio.com">
+        </div>
+        <div class="field">
+          <label>Contraseña (mín. 6 caracteres)</label>
+          <input type="password" id="regPass" placeholder="••••••••"
+            onkeydown="if(event.key==='Enter') registrarUsuario()">
+        </div>
+        <button class="btn-primary" id="btnRegistrar" onclick="registrarUsuario()">
+          Crear Cuenta
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── DASHBOARD ── -->
+  <div id="dashPanel">
+    <!-- Top bar -->
+    <div class="dash-topbar">
+      <div class="user-badge">
+        <div class="user-avatar" id="userAvatarLetter">U</div>
+        <div>
+          <div class="user-info-label">Usuario autenticado</div>
+          <div class="user-info-name" id="userNameDisp">—</div>
+        </div>
+      </div>
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        SESIÓN ACTIVA
+      </div>
+      <button class="btn-logout" onclick="cerrarSesion()">⏻ Cerrar Sesión</button>
+    </div>
+
+    <!-- Stats -->
+    <div class="dash-stats">
+      <div class="stat-card c-acceso">
+        <div class="stat-icon">🔓</div>
+        <div class="stat-value" id="statAccesos">0</div>
+        <div class="stat-label">Accesos</div>
+      </div>
+      <div class="stat-card c-registro">
+        <div class="stat-icon">👤</div>
+        <div class="stat-value" id="statRegistros">0</div>
+        <div class="stat-label">Registros</div>
+      </div>
+      <div class="stat-card c-error">
+        <div class="stat-icon">⚠</div>
+        <div class="stat-value" id="statErrores">0</div>
+        <div class="stat-label">Errores</div>
+      </div>
+      <div class="stat-card c-salida">
+        <div class="stat-icon">🔒</div>
+        <div class="stat-value" id="statSalidas">0</div>
+        <div class="stat-label">Salidas</div>
+      </div>
+    </div>
+
+    <!-- User info -->
+    <div class="dash-user-info">
+      <div class="info-card">
+        <div class="info-card-label">Correo electrónico</div>
+        <div class="info-card-value" id="userEmailDisp">—</div>
+      </div>
+      <div class="info-card">
+        <div class="info-card-label">UID (Firebase)</div>
+        <div class="info-card-value" id="userUIDDisp">—</div>
+      </div>
+      <div class="info-card">
+        <div class="info-card-label">Fecha de registro</div>
+        <div class="info-card-value" id="userCreated">—</div>
+      </div>
+      <div class="info-card">
+        <div class="info-card-label">Última conexión</div>
+        <div class="info-card-value" id="userLastLogin">—</div>
+      </div>
+    </div>
+
+    <!-- Log de incidencias -->
+    <div class="log-section">
+      <div class="log-header">
+        <h3>📋 Registro de Incidencias</h3>
+        <span class="log-count" id="logCount">0 eventos</span>
+        <button class="btn-clear" onclick="limpiarLog()">Limpiar</button>
+      </div>
+      <div class="log-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Fecha / Hora</th>
+              <th>Usuario</th>
+              <th>IP</th>
+              <th>Detalle</th>
+            </tr>
+          </thead>
+          <tbody id="incidenciasBody">
+            <tr>
+              <td colspan="5" style="text-align:center;color:var(--muted);padding:28px">Sin incidencias registradas</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // Reloj en tiempo real
+    function updateClock() {
+      const d = new Date();
+      document.getElementById("headerDate").textContent =
+        d.toLocaleDateString("es-MX", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }) +
+        "  " + d.toLocaleTimeString("es-MX");
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
+
+    // Última conexión
+    document.getElementById("userLastLogin").textContent =
+      new Date().toLocaleString("es-MX");
+
+    // Actualizar avatar con inicial y stats en tiempo real
+    const _origRenderInc = window.renderIncidencias;
+    setInterval(() => {
+      const nameEl = document.getElementById("userNameDisp");
+      const avatarEl = document.getElementById("userAvatarLetter");
+      if (nameEl && avatarEl && nameEl.textContent) {
+        avatarEl.textContent = nameEl.textContent[0].toUpperCase();
+      }
+
+      // Actualizar contadores desde el DOM de incidencias
+      const rows = document.querySelectorAll("#incidenciasBody .inc-row");
+      let a = 0, e = 0, r = 0, s = 0;
+      rows.forEach(row => {
+        const badge = row.querySelector(".badge");
+        if (!badge) return;
+        const t = badge.textContent.trim();
+        if (t === "ACCESO") a++;
+        if (t === "ERROR") e++;
+        if (t === "REGISTRO") r++;
+        if (t === "SALIDA") s++;
+      });
+      document.getElementById("statAccesos").textContent = a;
+      document.getElementById("statErrores").textContent = e;
+      document.getElementById("statRegistros").textContent = r;
+      document.getElementById("statSalidas").textContent = s;
+      document.getElementById("logCount").textContent = rows.length + " evento" + (rows.length !== 1 ? "s" : "");
+    }, 600);
+  </script>
+</body>
+
+</html>
