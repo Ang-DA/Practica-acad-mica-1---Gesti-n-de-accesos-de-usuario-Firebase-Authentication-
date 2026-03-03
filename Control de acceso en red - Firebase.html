@@ -17,6 +17,22 @@
       onAuthStateChanged,
       updateProfile
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import {
+      getFirestore,
+      collection,
+      doc,
+      addDoc,
+      setDoc,
+      getDoc,
+      getDocs,
+      deleteDoc,
+      query,
+      orderBy,
+      limit,
+      where,
+      onSnapshot,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyAGp_vjR9NGCQ1RBHZKFbmuQuKkVtNcxyg",
@@ -29,37 +45,87 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
+    const db = getFirestore(app);
+    let userRol = null;
 
     /* ── Registro de incidencias ────────────────── */
-    const incidencias = [];
-
-    function logIncidencia(tipo, usuario, detalle = "") {
-      const entrada = {
-        id: Date.now(),
-        tipo,
-        usuario: usuario || "Anónimo",
-        detalle,
-        fecha: new Date().toLocaleDateString("es-MX"),
-        hora: new Date().toLocaleTimeString("es-MX"),
-        ip: "192.168.1." + Math.floor(Math.random() * 254 + 1) // simulada
-      };
-      incidencias.unshift(entrada);
-      renderIncidencias();
-      return entrada;
+    async function logIncidencia(tipo, usuario, detalle = "") {
+      try {
+        await addDoc(collection(db, "incidencias"), {
+          tipo,
+          usuario: usuario || "Anónimo",
+          detalle,
+          fecha: new Date().toLocaleDateString("es-MX"),
+          hora: new Date().toLocaleTimeString("es-MX"),
+          ip: "192.168.1." + Math.floor(Math.random() * 254 + 1),
+          timestamp: serverTimestamp()
+        });
+      } catch (error) {
+        console.error("Error guardando incidencia:", error);
+      }
     }
 
-    function renderIncidencias() {
-      const tbody = document.getElementById("incidenciasBody");
-      if (!tbody) return;
-      tbody.innerHTML = incidencias.slice(0, 50).map(i => `
-      <tr class="inc-row ${i.tipo === 'ERROR' ? 'inc-error' : i.tipo === 'ACCESO' ? 'inc-acceso' : i.tipo === 'SALIDA' ? 'inc-salida' : 'inc-registro'}">
-        <td><span class="badge badge-${i.tipo.toLowerCase()}">${i.tipo}</span></td>
-        <td>${i.fecha} ${i.hora}</td>
-        <td class="td-user">${i.usuario}</td>
-        <td>${i.ip}</td>
-        <td>${i.detalle}</td>
-      </tr>
-    `).join("");
+    let unsubscribeIncidencias = null;
+
+    function cargarIncidencias() {
+
+      // Si ya existe un listener, lo cerramos
+      if (unsubscribeIncidencias) {
+        unsubscribeIncidencias();
+      }
+
+      let q;
+
+      if (userRol === "admin") {
+        q = query(
+          collection(db, "incidencias"),
+          orderBy("timestamp", "desc"),
+          limit(50)
+        );
+      } else {
+        const email = auth.currentUser.email;
+
+        q = query(
+          collection(db, "incidencias"),
+          where("usuario", "==", email),
+          orderBy("timestamp", "desc"),
+          limit(50)
+        );
+      }
+
+      unsubscribeIncidencias = onSnapshot(q, (snapshot) => {
+
+        const tbody = document.getElementById("incidenciasBody");
+        if (!tbody) return;
+
+        if (snapshot.empty) {
+          tbody.innerHTML = `
+        <tr>
+          <td colspan="5" style="text-align:center;color:var(--muted);padding:28px">
+            Sin incidencias registradas
+          </td>
+        </tr>
+      `;
+          return;
+        }
+
+        tbody.innerHTML = snapshot.docs.map(doc => {
+          const i = doc.data();
+          const fechaObj = i.timestamp?.toDate();
+          const fecha = fechaObj?.toLocaleDateString("es-MX");
+          const hora = fechaObj?.toLocaleTimeString("es-MX");
+
+          return `
+        <tr class="inc-row">
+          <td><span class="badge badge-${i.tipo.toLowerCase()}">${i.tipo}</span></td>
+          <td>${fecha} ${hora}</td>
+          <td>${i.usuario}</td>
+          <td>${i.ip}</td>
+          <td>${i.detalle}</td>
+        </tr>
+      `;
+        }).join("");
+      });
     }
 
     /* ── Autenticación ──────────────────────────── */
@@ -78,6 +144,13 @@
       try {
         setLoading("btnRegistrar", true);
         const cred = await createUserWithEmailAndPassword(auth, email, pass);
+        await setDoc(doc(db, "usuarios", cred.user.uid), {
+          nombre: nombre,
+          email: email,
+          uid: cred.user.uid,
+          rol: "usuario", // puedes cambiarlo luego
+          fechaRegistro: new Date()
+        });
         await updateProfile(cred.user, { displayName: nombre });
         logIncidencia("REGISTRO", email, `Nuevo usuario: ${nombre}`);
         showToast(`✓ Usuario ${nombre} registrado exitosamente`, "ok");
@@ -120,20 +193,57 @@
     };
 
     /* ── Estado de autenticación ────────────────── */
-    onAuthStateChanged(auth, user => {
+    onAuthStateChanged(auth, async user => {
+
       if (user) {
+
         document.getElementById("authPanel").style.display = "none";
         document.getElementById("dashPanel").style.display = "flex";
-        document.getElementById("userNameDisp").textContent = user.displayName || user.email;
+
+        document.getElementById("userNameDisp").textContent =
+          user.displayName || user.email;
+
         document.getElementById("userEmailDisp").textContent = user.email;
-        document.getElementById("userUIDDisp").textContent = user.uid.substring(0, 16) + "…";
-        document.getElementById("userCreated").textContent = user.metadata.creationTime
-          ? new Date(user.metadata.creationTime).toLocaleDateString("es-MX") : "—";
-        logIncidencia("ACCESO", user.email, `Sesión iniciada — UID: ${user.uid.substring(0, 8)}`);
+        document.getElementById("userUIDDisp").textContent =
+          user.uid.substring(0, 16) + "…";
+
+        document.getElementById("userCreated").textContent =
+          user.metadata.creationTime
+            ? new Date(user.metadata.creationTime).toLocaleDateString("es-MX")
+            : "—";
+
+        // Obtener rol desde Firestore
+        const docRef = doc(db, "usuarios", user.uid);
+        const docSnap = await getDoc(docRef);
+
+        if (docSnap.exists()) {
+          const datos = docSnap.data();
+          userRol = datos.rol; // Guardamos rol globalmente
+
+          console.log("Rol:", userRol);
+
+          if (userRol === "admin") {
+            showToast("Bienvenido administrador", "ok");
+          } else {
+            showToast("Bienvenido usuario", "ok");
+          }
+        }
+
+        logIncidencia("ACCESO", user.email,
+          `Sesión iniciada — UID: ${user.uid.substring(0, 8)}`);
+
+        cargarIncidencias();
+
       } else {
+        if (unsubscribeIncidencias) {
+          unsubscribeIncidencias();
+          unsubscribeIncidencias = null;
+        }
+
         document.getElementById("authPanel").style.display = "flex";
         document.getElementById("dashPanel").style.display = "none";
       }
+
     });
 
     /* ── Utilidades ─────────────────────────────── */
@@ -174,10 +284,23 @@
       document.getElementById("form-" + tab).classList.add("active");
     };
 
-    window.limpiarLog = function () {
-      incidencias.length = 0;
-      renderIncidencias();
-      showToast("Registro de incidencias limpiado", "ok");
+    // Funcion Limpiar
+    window.limpiarLog = async function () {
+
+      if (userRol !== "admin") {
+        showToast("Solo el administrador puede limpiar registros", "error");
+        return;
+      }
+
+      const snapshot = await getDocs(collection(db, "incidencias"));
+
+      const promises = snapshot.docs.map(docItem =>
+        deleteDoc(doc(db, "incidencias", docItem.id))
+      );
+
+      await Promise.all(promises);
+
+      showToast("Incidencias eliminadas", "ok");
     };
   </script>
 
